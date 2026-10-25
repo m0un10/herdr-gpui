@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     config::GitHubAccount,
-    github::{Account, Auth, Profile},
+    github::{Access, Account, Auth, Profile},
     menu::github::AdditionalAccount,
 };
 use secrecy::ExposeSecret;
@@ -64,6 +64,39 @@ fn repositories_an_additional_account_owns_are_read_with_it(cx: &mut TestAppCont
             // Without a main sign-in nothing is read, as before.
             view.menu.github = Auth::default();
             assert!(view.pr_tokens().is_none());
+        });
+    });
+}
+
+#[gpui::test]
+fn the_github_page_rechecks_every_waiting_account(cx: &mut TestAppContext) {
+    let (view, cx) = cx.add_window_view(crate::sidebar::layout_tests::fixture_window);
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.menu.github = Auth::connected_fixture();
+            view.menu.github.profile.as_mut().unwrap().access = Access::NotInstalled;
+            add_account(view, Some("fabien_microsoft"));
+            view.menu.github_accounts[0]
+                .auth
+                .profile
+                .as_mut()
+                .unwrap()
+                .access = Access::NotInstalled;
+            view.menu.page = Some(crate::menu::Page::GitHub);
+
+            assert!(!view.menu.github.access_recheck_scheduled_fixture());
+            assert!(
+                !view.menu.github_accounts[0]
+                    .auth
+                    .access_recheck_scheduled_fixture()
+            );
+            view.poll_github(window, cx);
+            assert!(view.menu.github.access_recheck_scheduled_fixture());
+            assert!(
+                view.menu.github_accounts[0]
+                    .auth
+                    .access_recheck_scheduled_fixture()
+            );
         });
     });
 }

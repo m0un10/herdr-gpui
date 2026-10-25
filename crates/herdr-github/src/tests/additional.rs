@@ -1,5 +1,10 @@
 use super::*;
-use crate::{Account, device::organizations};
+use crate::{
+    Account,
+    device::{
+        InstallationOrganizations, merge_organizations, organization_coverage, organizations,
+    },
+};
 
 fn pasted_profile() -> Profile {
     Profile {
@@ -105,6 +110,66 @@ fn organizations_are_read_bounded_and_checked() {
         .collect();
     let value = serde_json::json!({"data": {"viewer": {"organizations": {"nodes": many}}}});
     assert_eq!(organizations(&value).len(), 100);
+}
+
+#[test]
+fn memberships_and_private_organization_installations_are_merged() {
+    assert_eq!(
+        merge_organizations(
+            Some(vec!["public-org".into(), "SHARED".into()]),
+            Some(vec!["private-org".into(), "shared".into()])
+        ),
+        Some(vec![
+            "public-org".into(),
+            "SHARED".into(),
+            "private-org".into()
+        ])
+    );
+    assert_eq!(
+        merge_organizations(Some(Vec::new()), Some(vec!["private-org".into()])),
+        Some(vec!["private-org".into()])
+    );
+    assert_eq!(merge_organizations(None, None), None);
+
+    // Either source failing keeps the coverage unknown, so a profile refresh
+    // retains the last complete union instead of dropping owners.
+    assert_eq!(
+        organization_coverage(
+            None,
+            InstallationOrganizations::Listed(vec!["private-org".into()])
+        ),
+        None
+    );
+    assert_eq!(
+        organization_coverage(
+            Some(vec!["public-org".into()]),
+            InstallationOrganizations::Unknown
+        ),
+        None
+    );
+}
+
+#[test]
+fn the_merged_organization_bound_keeps_both_source_pages() {
+    let memberships: Vec<String> = (0..100).map(|index| format!("member-{index}")).collect();
+    let installed: Vec<String> = (0..100).map(|index| format!("installed-{index}")).collect();
+    let expected = memberships.len() + installed.len();
+    let merged = merge_organizations(Some(memberships), Some(installed)).unwrap();
+    assert_eq!(merged.len(), expected);
+    assert!(merged.iter().any(|owner| owner == "installed-99"));
+}
+
+#[test]
+fn a_private_organization_installation_routes_to_the_additional_account() {
+    let main = Profile::fixture("main", Arc::new("main-token".into()), &[]);
+    let mut additional = Profile::fixture("other", Arc::new("ghu_app-token".into()), &[]);
+    additional.organizations =
+        merge_organizations(Some(Vec::new()), Some(vec!["private-org".into()]));
+    let tokens = crate::Tokens::new(&main, [(&additional, &[][..])]);
+    assert_eq!(
+        tokens.for_owner("Private-Org").expose_secret(),
+        "ghu_app-token"
+    );
 }
 
 #[test]

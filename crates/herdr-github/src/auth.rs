@@ -94,6 +94,10 @@ impl Auth {
             ..Self::default()
         }
     }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn access_recheck_scheduled_fixture(&self) -> bool {
+        self.next_session_check.is_some()
+    }
     pub fn connected(&self) -> bool {
         self.profile.is_some()
     }
@@ -478,7 +482,7 @@ impl Auth {
             return;
         }
         let soon = now + ACCESS_RECHECK;
-        if self.next_session_check.is_some_and(|next| next > soon) {
+        if self.next_session_check.is_none_or(|next| next > soon) {
             self.next_session_check = Some(soon);
         }
     }
@@ -774,9 +778,9 @@ impl Auth {
 /// A loaded account, with what its GitHub App installations still need and
 /// what an additional account also needs: the organizations it covers.
 fn complete(profile: Profile, account: &Account) -> Profile {
-    let profile = with_access(profile);
+    let (profile, installed) = with_access(profile);
     match account {
-        Account::Additional(_) => with_organizations(profile),
+        Account::Additional(_) => with_organizations(profile, installed),
         Account::Main | Account::Host(_) => profile,
     }
 }

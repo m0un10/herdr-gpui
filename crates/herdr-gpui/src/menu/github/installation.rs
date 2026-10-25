@@ -105,11 +105,13 @@ impl HerdrWindow {
     }
 
     /// Open the first link the page offers, for its keyboard action.
-    pub(super) fn open_github_attention(&self, cx: &mut App) {
+    pub(super) fn open_github_attention(&mut self, cx: &mut App) {
         if let Some((_, url)) = self
             .github_attention()
             .and_then(|attention| attention.links.into_iter().next())
         {
+            self.github_auth_mut()
+                .recheck_access(std::time::Instant::now());
             cx.open_url(&url);
         }
     }

@@ -17,7 +17,7 @@ use std::time::Duration;
 
 /// Installations read from GitHub's first page; an account in more is rare,
 /// and the rest are simply not judged.
-const PAGE: usize = 100;
+pub(super) const PAGE: usize = 100;
 
 /// What a GitHub App sign-in still needs from the user.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -100,17 +100,27 @@ pub(super) struct App {
     permissions: Map<String, Value>,
 }
 
-/// The access of a GitHub App user token (`ghu_`). Any other token reaches
-/// repositories by its own grants, so it is [`Access::Unknown`] unchecked.
-pub(super) fn check(token: &SecretString) -> Result<Access> {
+/// The installations of a GitHub App user token (`ghu_`). Any other token
+/// reaches repositories by its own grants and has no App installations to
+/// inspect.
+pub(super) fn list(token: &SecretString) -> Result<Option<Listing>> {
     if !app_token(token) {
-        return Ok(Access::Unknown);
+        return Ok(None);
     }
-    let listing: Listing = get(
+    get(
         "installations",
         token,
         &format!("https://api.github.com/user/installations?per_page={PAGE}"),
-    )?;
+    )
+    .map(Some)
+}
+
+/// The access granted by `listing`. `None` belongs to a non-App token, which
+/// is unchecked.
+pub(super) fn check(token: &SecretString, listing: Option<&Listing>) -> Result<Access> {
+    let Some(listing) = listing else {
+        return Ok(Access::Unknown);
+    };
     // Every installation a user token lists belongs to the token's own App.
     let Some(slug) = listing.installations.first().map(|i| i.app_slug.as_str()) else {
         return Ok(Access::NotInstalled);
@@ -123,7 +133,22 @@ pub(super) fn check(token: &SecretString) -> Result<Access> {
         return Ok(Access::Unknown);
     }
     let app: App = get("app", token, &format!("https://api.github.com/apps/{slug}"))?;
-    Ok(assess(&listing, &app))
+    Ok(assess(listing, &app))
+}
+
+/// Organization owners whose installations this account can reach. An App
+/// installation remains visible even when the user's membership is private.
+pub(super) fn organization_owners(listing: &Listing) -> Vec<String> {
+    listing
+        .installations
+        .iter()
+        .take(PAGE)
+        .filter(|installation| {
+            installation.account.kind == "Organization"
+                && crate::config::valid_owner(&installation.account.login)
+        })
+        .map(|installation| installation.account.login.clone())
+        .collect()
 }
 
 /// Whether `token` is a GitHub App user token, the only kind checked.

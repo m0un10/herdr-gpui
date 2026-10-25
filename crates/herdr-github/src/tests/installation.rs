@@ -1,5 +1,7 @@
 use super::*;
-use crate::installation::{Access, App, Installation, Listing, assess, check};
+use crate::installation::{
+    Access, App, Installation, Listing, PAGE, assess, check, list, organization_owners,
+};
 
 fn listing(installations: Value) -> Listing {
     serde_json::from_value(serde_json::json!({ "installations": installations })).unwrap()
@@ -64,6 +66,30 @@ fn organization_permissions_never_wait_on_a_personal_account() {
     assert!(matches!(assess(&listing, &app(asked)), Access::Pending(_)));
 }
 
+#[test]
+fn new_security_permissions_wait_until_the_installation_approves_them() {
+    for permission in [
+        "repository_advisories",
+        "security_events",
+        "vulnerability_alerts",
+    ] {
+        let mut current = wanted();
+        current[permission] = "read".into();
+        assert!(
+            matches!(
+                assess(&listing_of_org(wanted()), &app(current.clone())),
+                Access::Pending(_)
+            ),
+            "{permission}"
+        );
+        assert_eq!(
+            assess(&listing_of_org(current.clone()), &app(current)),
+            Access::Ready,
+            "{permission}"
+        );
+    }
+}
+
 fn listing_of_org(permissions: Value) -> Listing {
     listing(serde_json::json!([installed(
         1,
@@ -115,8 +141,32 @@ fn approval_links_point_at_each_owners_settings() {
 fn only_a_github_app_user_token_is_checked() {
     // These return before any request, so no network is needed.
     for token in ["ghp_classic", "gho_oauth", "github_pat_fine", "plain"] {
-        assert_eq!(check(&token.into()).unwrap(), Access::Unknown);
+        let token = SecretString::from(token);
+        let listing = list(&token).unwrap();
+        assert!(listing.is_none());
+        assert_eq!(check(&token, listing.as_ref()).unwrap(), Access::Unknown);
     }
+}
+
+#[test]
+fn organization_installations_expose_checked_bounded_owners() {
+    let many: Vec<Value> = [
+        installed(150, "../invalid", "Organization", wanted()),
+        installed(151, "personal", "User", wanted()),
+    ]
+    .into_iter()
+    .chain(
+        (0..150).map(|index| installed(index, &format!("org-{index}"), "Organization", wanted())),
+    )
+    .collect();
+    let owners = organization_owners(&listing(Value::Array(many)));
+    assert_eq!(owners.len(), PAGE - 2);
+    assert_eq!(owners.first().map(String::as_str), Some("org-0"));
+    let expected_last = format!("org-{}", PAGE - 3);
+    assert_eq!(
+        owners.last().map(String::as_str),
+        Some(expected_last.as_str())
+    );
 }
 
 #[test]
@@ -146,13 +196,6 @@ fn a_failed_check_keeps_what_the_last_one_found() {
 fn a_waiting_account_is_checked_again_soon_but_not_constantly() {
     let now = Instant::now();
     let mut auth = Auth::connected_fixture();
-    auth.next_session_check = Some(now + Duration::from_secs(300));
-    auth.recheck_access(now);
-    assert_eq!(
-        auth.next_session_check,
-        Some(now + Duration::from_secs(300))
-    );
-
     auth.profile.as_mut().unwrap().access = Access::NotInstalled;
     auth.recheck_access(now);
     let soon = now + Duration::from_secs(30);
@@ -160,4 +203,16 @@ fn a_waiting_account_is_checked_again_soon_but_not_constantly() {
     // Looking again keeps the check already due rather than pushing it back.
     auth.recheck_access(now + Duration::from_secs(10));
     assert_eq!(auth.next_session_check, Some(soon));
+
+    auth.next_session_check = Some(now + Duration::from_secs(300));
+    auth.profile.as_mut().unwrap().access = Access::Ready;
+    assert_eq!(
+        auth.next_session_check,
+        Some(now + Duration::from_secs(300))
+    );
+    auth.recheck_access(now);
+    assert_eq!(
+        auth.next_session_check,
+        Some(now + Duration::from_secs(300))
+    );
 }
